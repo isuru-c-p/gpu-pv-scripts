@@ -7,6 +7,13 @@ Param (
 
 Import-Module $PSSCriptRoot\Add-VMGpuPartitionAdapterFiles.psm1
 
+function GetDriveLetter {
+    $UsedDriveLetters = @(Get-WmiObject -Class Win32_LogicalDisk | %{$([char]$_.DeviceID.Trim(':'))})
+    $TempDriveLetters = @((Compare-Object -DifferenceObject $UsedDriveLetters -ReferenceObject $( 67..90 | % { "$([char]$_)" } ) ) | ? { $_.SideIndicator -eq '<=' } | % { $_.InputObject })
+    $AvailableDriveLetter = ($TempDriveLetters | Sort-Object)
+    $TempDriveLetters[0]
+}
+
 $VM = Get-VM -VMName $VMName
 $VHD = Get-VHD -VMId $VM.VMId
 
@@ -25,7 +32,24 @@ While ($VM.State -ne "Off") {
     }
 
 "Mounting Drive..."
-$DriveLetter = (Mount-VHD -Path $VHD.Path -PassThru | Get-Disk | Get-Partition | Get-Volume | Where-Object {$_.DriveLetter} | ForEach-Object DriveLetter)
+$Partitions = (Mount-VHD -Path $VHD.Path -PassThru | Get-Disk | Get-Partition)
+
+# Filter to partition with "Windows" folder
+$DriveLetter = $Partitions | ForEach-Object {
+    $driveLetter = $_.DriveLetter
+    if (!$driveLetter) {
+        $driveLetter = GetDriveLetter
+        Write-Debug "Assigning $driveLetter..."
+        Set-Partition -InputObject $_ -NewDriveLetter $driveLetter
+    }
+    if (Test-Path "${driveLetter}:\windows") {
+        $driveLetter
+    } else {
+        $null
+    }
+} | Where-Object { $_ }
+
+"Drive letter: $DriveLetter"
 
 "Copying GPU Files - this could take a while..."
 Add-VMGPUPartitionAdapterFiles -hostname $Hostname -DriveLetter $DriveLetter -GPUName $GPUName
